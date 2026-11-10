@@ -114,6 +114,12 @@
   .opt.chosen { background:#E4D8C0; border-color:var(--ink); }
   .opt.truth { border-color:var(--red); }
   .opt.truth::after { content:''; position:absolute; right:7px; top:7px; width:8px; height:8px; background:var(--red); border-radius:2px; }
+  .tune { text-align:left; margin-top:18px; font-size:13px; border-top:1px solid rgba(43,37,33,.2); padding-top:10px; }
+  .tune label { display:block; margin:8px 0 0; font-style:italic; }
+  .tune label b { float:right; font-style:normal; font-weight:400; }
+  .tune input[type=range] { width:100%; margin:4px 0 0; }
+  #tuneOut { width:100%; margin-top:10px; font:11px/1.35 ui-monospace, Menlo, monospace; background:rgba(255,255,255,.35);
+    border:1px solid rgba(43,37,33,.25); border-radius:4px; padding:6px; color:var(--ink); resize:none; -webkit-user-select:text; user-select:text; }
   .reveal { font-size:17px; font-style:italic; margin:12px 0 4px; }
 </style>
 </head>
@@ -133,6 +139,13 @@
     <div class="btns">
       <button id="begin">Begin</button>
       <button id="openJ" class="hidden">Journal</button>
+    </div>
+    <div id="tunePanel" class="tune hidden">
+      <p class="ask2">Test panel</p>
+      <label>Dot speed <b id="tvSpeed"></b><input id="tSpeed" type="range" min="10" max="60" step="1"></label>
+      <label>Follow zone <b id="tvRad"></b><input id="tRad" type="range" min="35" max="90" step="1"></label>
+      <label>Ink pull <b id="tvMag"></b><input id="tMag" type="range" min="0" max="1" step="0.05"></label>
+      <textarea id="tuneOut" readonly rows="8" aria-label="Test results, select and copy"></textarea>
     </div>
   </div>
 </div>
@@ -200,9 +213,10 @@ const FAST = /[?&]fast/.test(location.search);          // add ?fast to the addr
 const FORCE_GUIDE = /[?&]guide/.test(location.search);  // add ?guide to see the first-time guide again
 const ALL = /[?&]all/.test(location.search);            // add ?all to open every page of the sketchbook
 const STEPS = 8;                                        // the outline is split into this many stretches; each one plays a note and fills the brush circle
-const DOT_SPEED = FAST ? 110 : 32;                      // how fast the dot walks along the outline (pixels per second). Lower is easier to follow
-const FOLLOW_RADIUS = 56;                               // how close you need to stay to the dot (pixels). Larger is more forgiving
-const INK_MAGNET = 0.5;                                 // 0 = the ink goes exactly under your finger, 1 = it snaps onto the dot's line
+let DOT_SPEED = FAST ? 110 : 32;                      // how fast the dot walks along the outline (pixels per second). Lower is easier to follow
+const TUNE = /[?&]tune/.test(location.search);              // add ?tune to the address for a test panel with live sliders
+let FOLLOW_RADIUS = 56;                               // how close you need to stay to the dot (pixels). Larger is more forgiving
+let INK_MAGNET = 0.5;                                 // 0 = the ink goes exactly under your finger, 1 = it snaps onto the dot's line
 const ARRIVE_END = FAST ? 4 : 15;                       // seconds of gentle start (the dot walks slower and the music is sparse)
 
 const SESSION_CAP = FAST ? 100 : 240;                   // seconds; the session wraps up with whatever shape you have
@@ -917,6 +931,7 @@ function startSession() {
 }
 
 function abort() {
+  logRun('stopped early');
   mode = 'idle'; touching = false; armed = false; tracerId = null; flour = null;
   setDrone(0, 0); setScratch(0, 0);
   endBtn.classList.add('hidden'); startEl.classList.remove('hidden');
@@ -1245,10 +1260,44 @@ function toggleOutline() {
   $('ovTog').textContent = on ? 'Show outline' : 'Hide outline';
 }
 
+/* ---- test panel (only with ?tune): live sliders and a log of each run, for trying the game on a real phone ---- */
+const runs = [];
+function tuneRender() {
+  if (!TUNE) return;
+  $('tSpeed').value = DOT_SPEED; $('tRad').value = FOLLOW_RADIUS; $('tMag').value = INK_MAGNET;
+  $('tvSpeed').textContent = DOT_SPEED + ' px/s'; $('tvRad').textContent = FOLLOW_RADIUS + ' px'; $('tvMag').textContent = INK_MAGNET.toFixed(2);
+  $('tuneOut').value = 'DOT_SPEED=' + DOT_SPEED + ' FOLLOW_RADIUS=' + FOLLOW_RADIUS + ' INK_MAGNET=' + INK_MAGNET.toFixed(2) +
+    '\nscreen ' + W + 'x' + H + ' @' + DPR + 'x\n' + (runs.length ? runs.slice(-8).join('\n') : 'No runs yet. Play one, tap Done, and the result appears here.');
+}
+function initTune() {
+  if (!TUNE) return;
+  try {
+    const s = JSON.parse(localStorage.getItem('inkflow_tune') || '{}');
+    if (s.speed) DOT_SPEED = s.speed; if (s.rad) FOLLOW_RADIUS = s.rad; if (typeof s.mag === 'number') INK_MAGNET = s.mag;
+  } catch (e) {}
+  $('tunePanel').classList.remove('hidden');
+  const apply = () => {
+    DOT_SPEED = +$('tSpeed').value; FOLLOW_RADIUS = +$('tRad').value; INK_MAGNET = +$('tMag').value;
+    R = FOLLOW_RADIUS * U;
+    try { localStorage.setItem('inkflow_tune', JSON.stringify({ speed: DOT_SPEED, rad: FOLLOW_RADIUS, mag: INK_MAGNET })); } catch (e) {}
+    tuneRender();
+  };
+  ['tSpeed', 'tRad', 'tMag'].forEach(id => $(id).addEventListener('input', apply));
+  tuneRender();
+}
+function logRun(note) {
+  if (!TUNE || !stats) return;
+  const near = stats.allTot > 1 ? Math.round(100 * stats.allNear / stats.allTot) + '% close' : 'n/a';
+  runs.push((runs.length + 1) + '. ' + (icon ? scene.name + '/' + icon.nm : '?') + ' ' + Math.round(sessionTime) + 's, ' + Math.round(prog * 100) + '% done, ' +
+    near + ', ' + stats.detours + ' detours, ' + stats.pauses + ' pauses' + (note ? ', ' + note : '') + ' [' + DOT_SPEED + '/' + FOLLOW_RADIUS + '/' + INK_MAGNET.toFixed(2) + ']');
+  tuneRender();
+}
+
 function showResult() {
   if (flour) flourishDraw(ig, 1);                         // bake the closing flourish into the finished sheet
   flour = null;
   const r = buildReading();
+  logRun('');
   if (scene.id === 'night' && icon.title) r.title = icon.title;   // the sky names your constellation
   mode = 'idle'; endBtn.classList.add('hidden');
   const sheet = snapshotCanvas(900);
@@ -1610,6 +1659,7 @@ window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer
 loadJournal();
 loadProgress();
 scene = SCENES[0];
+initTune();
 resize();
 SCENES.forEach(s => { thumbs[s.id] = makeThumb(s); });
 chooseDefaultSel(); renderBook(); updateStartButtons();
